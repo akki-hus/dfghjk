@@ -59,17 +59,13 @@ app.get("/api/health", (req, res) => {
   res.json({ status: "healthy", timestamp: new Date().toISOString() });
 });
 
-// Helper: Try to extract structured JSON slides from text notes using Groq API
+// Helper: Try to extract structured JSON slides from text notes using Pollinations AI (same provider as images - keyless and fast)
 async function generateRevisionSlides(
   textNotes: string, 
   topicName: string = "", 
   standard: string = "", 
   board: string = ""
 ): Promise<{ topic: string; slides: any[] }> {
-  const customGroqKey = process.env.GROQ_API_KEY || "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";
-  
-  console.log(`Using Groq API with Llama-3.3-70b-versatile for text gen. Context: standard=${standard}, board=${board}`);
-  
   const systemPrompt = `You are an expert masterclass educator, textbook author, and visual director. Your goal is to transform complex textbook notes or study guides into extremely engaging, deep study revision reels.
 You must plan an extensive, high-quality visual slideshow of between 10 and 15 slides to make the revision reel long, complete, comprehensive, and high-value. Keep the student's cohort standard "${standard}" and syllabus board "${board}" in mind to align the academic rigor perfectly.
 
@@ -104,60 +100,55 @@ Study Notes context:
 ${textNotes.slice(0, 18000)}`;
 
   try {
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    console.log(`Using Pollinations AI keyless text model ('openai') for slide generation. Context: standard=${standard}, board=${board}`);
+    const response = await fetch("https://text.pollinations.ai/", {
       method: "POST",
       headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${customGroqKey}`
+        "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: "llama-3.3-70b-versatile",
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: inputPrompt }
         ],
-        response_format: { type: "json_object" },
-        temperature: 0.7
+        model: "openai", // uses a premium model that responds beautifully in JSON mode
+        jsonMode: true
       })
     });
 
     if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`Groq API error status ${response.status}: ${errText}`);
+      throw new Error(`Pollinations API status code is ${response.status}`);
     }
 
-    const payload: any = await response.json();
-    const content = payload.choices?.[0]?.message?.content || "";
-    if (!content) {
-      throw new Error("Empty response from Groq completion");
+    const text = await response.text();
+    let cleanText = text.trim();
+    if (cleanText.startsWith("```json")) {
+      cleanText = cleanText.substring(7);
     }
-
-    const parsed = JSON.parse(content.trim());
-    return parsed;
-  } catch (error: any) {
-    console.error("Groq-based revision slide generation failed. Falling back to Gemini...", error);
-    return generateRevisionSlidesWithGeminiFallback(textNotes, topicName, standard, board);
+    if (cleanText.endsWith("```")) {
+      cleanText = cleanText.substring(0, cleanText.length - 3);
+    }
+    
+    return JSON.parse(cleanText.trim());
+  } catch (err: any) {
+    console.warn("Pollinations Text API slide generation failed. Falling back to built-in Gemini...", err);
+    return generateRevisionSlidesWithGeminiFallback(textNotes, topicName, standard, board, systemPrompt, inputPrompt);
   }
 }
 
-// Fallback logic using Gemini in case Groq is unavailable
+// Fallback logic using built-in Gemini 3.5 Flash in case Pollinations text API is slow or offline
 async function generateRevisionSlidesWithGeminiFallback(
   textNotes: string, 
-  topicName: string = "",
-  standard: string = "",
-  board: string = ""
+  topicName: string, 
+  standard: string, 
+  board: string,
+  systemPrompt: string,
+  inputPrompt: string
 ): Promise<{ topic: string; slides: any[] }> {
   try {
     const ai = getAI();
     console.log("Engaging Gemini 3.5 Flash backup pipeline...");
-    const systemPrompt = `You are an expert masterclass educator who transforms complex topics, PDFs, or textbook notes into highly immersive, extremely engaging, and deep study revision reels.
-You must plan an extensive visual study slideshow of between 10 and 15 slides. Keep the Cohort context: Grade ${standard} (${board}) in mind.
-For each slide, you MUST write exactly 5 sequential, distinct visual image prompts inside the "image_prompts" array, each representing a concrete educational concept, progress detail, or metaphor representing the progression of that slide's narration. No text or labels in any prompt.`;
-
-    const inputPrompt = `Topic Hint: ${topicName}
-Study Notes content:
-${textNotes.slice(0, 18000)}`;
-
+    
     const response = await ai.models.generateContent({
       model: "gemini-3.5-flash",
       contents: inputPrompt,
@@ -216,9 +207,9 @@ ${textNotes.slice(0, 18000)}`;
 
     const rawText = response.text || "";
     return JSON.parse(rawText.trim());
-  } catch (err) {
-    console.error("Gemini fallback also failed:", err);
-    throw new Error("Both Groq and fallback Gemini generation pipelines failed. Verify your network or API keys.");
+  } catch (err: any) {
+    console.error("Both Pollinations text API and Gemini fallback failed:", err);
+    throw new Error(`Revision generation failed: ${err.message || err}`);
   }
 }
 
